@@ -1,0 +1,144 @@
+<!doctype html>
+<html>
+<head>
+    <meta charset="utf-8"/>
+    <title>HTTPeek</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1"/>
+    <style>
+        html,body {margin:0;padding:0;font-family:Inter,system-ui,Arial,sans-serif;background:#0b0e13;color:#e6e8eb;}
+        header {display:flex;align-items:center;justify-content:space-between;padding:12px 16px;background:#0f131a;border-bottom:1px solid #1b2230;}
+        .brand {font-weight:700;}
+        .wrap {display:grid;grid-template-columns: 420px 1fr; height: calc(100vh - 54px);}
+        aside {border-right:1px solid #1b2230; overflow:auto;}
+        main {overflow:auto;}
+        .toolbar {display:flex;gap:8px;padding:8px;border-bottom:1px solid #1b2230;}
+        .toolbar button {background:#1a2130;border:1px solid #2a3447;color:#e6e8eb;padding:6px 10px;border-radius:8px;cursor:pointer}
+        .toolbar input {flex:1;background:#0b0e13;border:1px solid #2a3447;color:#e6e8eb;padding:6px 8px;border-radius:8px}
+        table {width:100%;border-collapse:collapse;font-size:14px}
+        th,td {padding:8px;border-bottom:1px solid #1b2230; vertical-align:top}
+        tr:hover {background:#121723;}
+        .pill {display:inline-block;padding:2px 8px;border:1px solid #2a3447;border-radius:999px;margin-right:6px;font-size:12px}
+        .code {white-space:pre-wrap; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background:#0b0e13; border:1px solid #1b2230; padding:8px; border-radius:8px;}
+        .kv {display:grid;grid-template-columns: 220px 1fr; gap:6px}
+        .muted {opacity:.7}
+        .small {font-size:12px}
+        .danger {color:#ff7272}
+    </style>
+</head>
+<body>
+<header>
+    <div class="brand">🧪 HTTPeek</div>
+    <nav class="small muted">HTTP(S) debug proxy with UI • Live • Replay • HAR</nav>
+</header>
+<div class="wrap">
+    <aside>
+        <div class="toolbar">
+            <input id="search" placeholder="filter: host:example.com status:200 method:GET text"/>
+            <button id="btn-refresh">Refresh</button>
+            <button id="btn-clear">Clear</button>
+        </div>
+        <table id="list">
+            <thead><tr><th>Time</th><th>Req</th><th>Resp</th></tr></thead>
+            <tbody></tbody>
+        </table>
+    </aside>
+    <main>
+        <div class="toolbar">
+            <button id="btn-replay" disabled>Replay</button>
+            <button id="btn-export">Export HAR</button>
+        </div>
+        <div id="details" style="padding:12px">
+            <div class="muted">Select entry…</div>
+        </div>
+    </main>
+</div>
+
+<script>
+    let ENTRIES=[], SELECTED=null;
+
+    function rowHtml(e){
+        const time = new Date(e.startedAt).toLocaleTimeString();
+        const method = `<span class="pill">${e.method}</span>`;
+        const url = e.url.replace(/^https?:\/\//,'');
+        const resp = e.error ? `<span class="danger">${e.error}</span>` : `<span>${e.status}</span>`;
+        return `<tr data-id="${e.id}"><td class="small muted">${time}<br/><span class="small muted">${e.host}</span></td><td>${method} ${url}</td><td>${resp}</td></tr>`;
+    }
+    function renderList(){
+        const q = document.getElementById('search').value.trim().toLowerCase();
+        const tb = document.querySelector('#list tbody');
+        tb.innerHTML='';
+        ENTRIES.filter(e=>{
+            if(!q) return true;
+            const parts = q.split(' ');
+            return parts.every(p=>{
+                if(p.startsWith('host:')) return e.host.toLowerCase().includes(p.slice(5));
+                if(p.startsWith('status:')) return String(e.status).includes(p.slice(7));
+                if(p.startsWith('method:')) return e.method.toLowerCase().includes(p.slice(7));
+                return (e.url+' '+e.method+' '+e.host).toLowerCase().includes(p);
+            });
+        }).forEach(e=>{
+            tb.insertAdjacentHTML('beforeend', rowHtml(e));
+        });
+    }
+    function hKV(arr){
+        if(!arr||!arr.length) return '<div class="muted small">(none)</div>';
+        return '<div class="kv">'+arr.map(kv=>`<div class="muted small">${kv.key}</div><div class="small">${kv.value}</div>`).join('')+'</div>';
+    }
+    function detailsHtml(e){
+        if(!e) return '<div class="muted">Select entry…</div>';
+        const dur = (e.duration/1e6).toFixed(1)+' ms';
+        const reqBody = e.reqBody?.length ? new TextDecoder().decode(Uint8Array.from(e.reqBody)) : '';
+        const respBody = e.respBody?.length ? new TextDecoder().decode(Uint8Array.from(e.respBody)) : '';
+        return `
+    <h3>${e.method} ${e.url}</h3>
+    <div class="small muted">HTTP ${e.httpVersion} • ${dur} • ${e.scheme.toUpperCase()}</div>
+    <h4>Request headers</h4>${hKV(e.reqHeaders)}
+    <h4>Request body</h4><div class="code">${escapeHtml(reqBody)}</div>
+    <h4>Response ${e.status||''}</h4>${hKV(e.respHeaders)}
+    <h4>Response body</h4><div class="code">${escapeHtml(respBody)}</div>
+  `;
+    }
+    function escapeHtml(s){return s? s.replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[m])):''}
+
+    async function load(){
+        const r = await fetch('/api/entries?limit=500');
+        ENTRIES = await r.json();
+        renderList();
+    }
+    document.getElementById('btn-refresh').onclick=load;
+    document.getElementById('btn-clear').onclick=async()=>{
+        await fetch('/api/clear',{method:'POST'});
+        ENTRIES=[]; renderList(); document.getElementById('details').innerHTML='<div class="muted">Select entry…</div>';
+    };
+
+    document.querySelector('#list').onclick=e=>{
+        const tr = e.target.closest('tr'); if(!tr) return;
+        const id=tr.dataset.id; SELECTED = ENTRIES.find(x=>x.id===id);
+        document.getElementById('details').innerHTML = detailsHtml(SELECTED);
+        document.getElementById('btn-replay').disabled = !SELECTED;
+    };
+    document.getElementById('search').oninput=renderList;
+
+    document.getElementById('btn-replay').onclick=async()=>{
+        if(!SELECTED) return;
+        const r = await fetch('/api/replay/'+SELECTED.id, {method:'POST'});
+        const data = await r.json();
+        alert('Replayed: status '+data.status+' in '+data.durationMs+' ms');
+    };
+
+    document.getElementById('btn-export').onclick=()=>{
+        location.href='/api/export/har';
+    };
+
+    // Live events
+    const es = new EventSource('/events');
+    es.addEventListener('entry', ev=>{
+        const e = JSON.parse(ev.data);
+        ENTRIES.unshift(e);
+        renderList();
+    }, false);
+
+    load();
+</script>
+</body>
+</html>
