@@ -32,7 +32,7 @@ func NewServer(store *storage.Store) http.Handler {
 	s.mux.HandleFunc("/api/clear", s.handleClear)
 
 	s.mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, "/ui/", http.StatusFound)
+		http.Redirect(w, r, "/ui/static", http.StatusFound)
 	})
 
 	return s.mux
